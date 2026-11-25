@@ -82,17 +82,17 @@ function AuthenticatedWorkspace() {
 function AppContent() {
   const { firebaseUser, userProfile, activeBusiness, loadingAuth, loadingBusinesses } = useAuth();
 
-  if (loadingAuth || (firebaseUser?.emailVerified && loadingBusinesses && !activeBusiness)) {
+  if (loadingAuth || (firebaseUser && loadingBusinesses && !activeBusiness)) {
     return (
-      <div className="min-h-screen bg-[#F5F7FB] flex flex-col items-center justify-center p-6">
+      <div className="min-h-screen bg-[#F4F6FA] flex flex-col items-center justify-center p-6">
         <EzFlowLogo size="xl" className="mb-4" />
-        <p className="text-sm font-semibold text-slate-900">Memuat Workspace EzFlow...</p>
+        <p className="font-display text-sm font-bold text-slate-900">Memuat Workspace EzFlow...</p>
         <p className="text-xs text-slate-500 mt-1">Run Smarter. Flow Better.</p>
       </div>
     );
   }
 
-  if (!firebaseUser || !firebaseUser.emailVerified || !activeBusiness || userProfile?.onboardingCompleted === false) {
+  if (!firebaseUser || !activeBusiness || userProfile?.onboardingCompleted === false) {
     return <OnboardingFlow />;
   }
 

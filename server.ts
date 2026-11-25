@@ -84,10 +84,6 @@ async function requireFirebaseAuth(req: AuthenticatedRequest, res: Response, nex
       res.status(401).json({ error: 'Akun pengguna tidak ditemukan.' });
       return;
     }
-    if (!user.emailVerified) {
-      res.status(403).json({ error: 'Email akun belum terverifikasi. Harap verifikasi email terlebih dahulu.' });
-      return;
-    }
 
     req.authUser = {
       uid: user.localId,

@@ -24,11 +24,11 @@ service cloud.firestore {
     }
 
     function isVerified() {
-      return isSignedIn() && request.auth.token.email_verified == true;
+      return isSignedIn();
     }
 
     function isSuperAdminEmail() {
-      return isVerified() && (
+      return isSignedIn() && request.auth.token.email_verified == true && (
         request.auth.token.email == 'graciellaklarysa@gmail.com' ||
         request.auth.token.email == 'admin@ezflow.demo'
       );

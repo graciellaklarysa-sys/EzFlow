@@ -54,10 +54,19 @@ export const DIRTY_DOZEN_TESTS = [
     expected: 'PERMISSION_DENIED',
   },
   {
-    name: '7. Unverified Email Write Attempt',
-    path: '/businesses/biz_A/expenses/exp_1',
+    name: '7. Unverified Email Super-Admin Spoofing Attempt',
+    path: '/users/spoof_uid',
     operation: 'create',
-    authClaims: { email_verified: false },
+    authClaims: { email: 'admin@ezflow.demo', email_verified: false },
+    payload: {
+      uid: 'spoof_uid',
+      name: 'Spoofer',
+      email: 'admin@ezflow.demo',
+      role: 'SUPER_ADMIN',
+      onboardingCompleted: false,
+      createdAt: 'REQUEST_TIME',
+      updatedAt: 'REQUEST_TIME',
+    },
     expected: 'PERMISSION_DENIED',
   },
   {

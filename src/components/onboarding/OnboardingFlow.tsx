@@ -26,7 +26,7 @@ import { clampStr, generateSafeId } from '../../lib/format';
 import { seedEzFlowCafeDemo } from '../../lib/demoSeed';
 import type { PaymentMethod } from '../../types/ezflow';
 
-type OnboardingStep = 'welcome' | 'auth' | 'verify_email' | 'business' | 'outlet' | 'preferences' | 'complete';
+type OnboardingStep = 'welcome' | 'auth' | 'business' | 'outlet' | 'preferences' | 'complete';
 type AuthTab = 'register' | 'login' | 'forgot';
 
 export function OnboardingFlow() {
@@ -38,8 +38,6 @@ export function OnboardingFlow() {
     registerWithEmail,
     loginWithEmail,
     sendResetPassword,
-    resendVerificationEmail,
-    reloadUserStatus,
     logout,
     selectBusiness,
   } = useAuth();
@@ -61,9 +59,8 @@ export function OnboardingFlow() {
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [acceptedTerms, setAcceptedTerms] = useState(false);
+  const [acceptedTerms, setAcceptedTerms] = useState(true);
 
   // Step 3: Business Profile
   const [bizName, setBizName] = useState('');
@@ -98,21 +95,19 @@ export function OnboardingFlow() {
 
   const [createdBizId, setCreatedBizId] = useState('');
 
-  // Auto-advance when authenticated
+  // Auto-advance when authenticated (no email verification confirmation required)
   useEffect(() => {
     if (!firebaseUser) return;
-    if (!firebaseUser.emailVerified) {
-      setStep('verify_email');
-      return;
-    }
-    setOwnerName((prev) => prev || firebaseUser.displayName || userProfile?.name || '');
+    const fallbackName =
+      firebaseUser.displayName || userProfile?.name || (firebaseUser.email ? firebaseUser.email.split('@')[0] : 'Pemilik Bisnis');
+    setOwnerName((prev) => prev || fallbackName);
     setBizEmail((prev) => prev || firebaseUser.email || '');
-    if (businesses.length === 0 && (step === 'welcome' || step === 'auth' || step === 'verify_email')) {
+    if (businesses.length === 0 && (step === 'welcome' || step === 'auth')) {
       setStep('business');
     } else if (
       businesses.length > 0 &&
       userProfile?.onboardingCompleted === false &&
-      (step === 'welcome' || step === 'auth' || step === 'verify_email')
+      (step === 'welcome' || step === 'auth')
     ) {
       setCreatedBizId((prev) => prev || businesses[0].id);
       setStep('complete');
@@ -161,17 +156,12 @@ export function OnboardingFlow() {
     }
   };
 
-  const passwordChecks = {
-    length: password.length >= 8,
-    upper: /[A-Z]/.test(password),
-    lower: /[a-z]/.test(password),
-    number: /[0-9]/.test(password),
-  };
-  const passwordStrong = Object.values(passwordChecks).every(Boolean);
+  const passwordValid = password.length >= 6;
 
   const handleGoogleLogin = async () => {
     setBusy(true);
     setAuthError('');
+    setShowProviderGuide(false);
     try {
       await signInWithGoogle();
       showToast('Berhasil masuk dengan akun Google.', 'success');
@@ -210,16 +200,8 @@ export function OnboardingFlow() {
     }
 
     if (authTab === 'register') {
-      if (!fullName.trim()) {
-        setAuthError('Nama lengkap wajib diisi.');
-        return;
-      }
-      if (!passwordStrong) {
-        setAuthError('Kata sandi belum memenuhi syarat keamanan (minimal 8 karakter, huruf besar, huruf kecil, dan angka).');
-        return;
-      }
-      if (password !== confirmPassword) {
-        setAuthError('Konfirmasi kata sandi tidak cocok.');
+      if (!passwordValid) {
+        setAuthError('Kata sandi minimal 6 karakter.');
         return;
       }
       if (!acceptedTerms) {
@@ -227,13 +209,11 @@ export function OnboardingFlow() {
         return;
       }
 
+      const displayName = fullName.trim() || email.trim().split('@')[0] || 'Pemilik Bisnis';
       setBusy(true);
       try {
-        const res = await registerWithEmail(fullName, email, password);
-        if (res.needsVerification) {
-          showToast('Akun dibuat! Silakan cek inbox email Anda untuk verifikasi.', 'info');
-          setStep('verify_email');
-        }
+        await registerWithEmail(displayName, email, password);
+        showToast('Akun dibuat! Anda langsung masuk tanpa perlu konfirmasi email.', 'success');
       } catch (err) {
         const mapped = mapFirebaseAuthError(err);
         setAuthError(mapped);
@@ -276,8 +256,13 @@ export function OnboardingFlow() {
         userEmail: firebaseUser.email || 'owner@ezflowcafe.id',
         isSuperAdmin: userProfile?.role === 'SUPER_ADMIN',
       });
+      await updateDoc(doc(db, 'users', firebaseUser.uid), {
+        activeBusinessId: businessId,
+        onboardingCompleted: true,
+        updatedAt: serverTimestamp(),
+      });
       await selectBusiness(businessId);
-      showToast('Demo Workspace "EzFlow Café" berhasil dimuat!', 'success');
+      showToast('Demo Workspace "EzFlow Café" siap digunakan!', 'success');
     } catch (err) {
       showToast(formatAppError(err, 'Gagal memuat demo workspace.'), 'error');
     } finally {
@@ -285,8 +270,12 @@ export function OnboardingFlow() {
     }
   };
 
-  const handleCompleteOnboarding = async () => {
+  const handleCompleteOnboarding = async (directToDashboard = false) => {
     if (!firebaseUser) return;
+    if (!bizName.trim()) {
+      showToast('Nama bisnis wajib diisi.', 'error');
+      return;
+    }
     setBusy(true);
     const bizId = generateSafeId('biz');
     const outId = generateSafeId('out');
@@ -294,6 +283,9 @@ export function OnboardingFlow() {
     const empId = generateSafeId('emp');
     const uid = firebaseUser.uid;
     const memberUids = [uid];
+    const resolvedOwnerName =
+      ownerName.trim() || firebaseUser.displayName || userProfile?.name || firebaseUser.email?.split('@')[0] || 'Pemilik';
+    const resolvedOutletName = outletName.trim() || 'Outlet Utama';
 
     try {
       // Create Business doc FIRST
@@ -302,7 +294,7 @@ export function OnboardingFlow() {
         name: clampStr(bizName, 120),
         category: clampStr(bizCategory, 60),
         description: clampStr(bizDesc, 500),
-        ownerName: clampStr(ownerName, 120),
+        ownerName: clampStr(resolvedOwnerName, 120),
         ownerUid: uid,
         memberUids,
         businessEmail: clampStr(bizEmail, 200),
@@ -333,8 +325,8 @@ export function OnboardingFlow() {
         businessId: bizId,
         ownerUid: uid,
         memberUids,
-        name: clampStr(outletName, 120),
-        address: clampStr(outletAddress || bizAddress || 'Alamat Outlet', 300),
+        name: clampStr(resolvedOutletName, 120),
+        address: clampStr(outletAddress || bizAddress || bizCity || 'Indonesia', 300),
         contactNumber: clampStr(outletContact || bizPhone, 40),
         operatingHours: clampStr(outletHours || operatingHours, 80),
         tableCount: Math.max(0, Math.round(tableCount)),
@@ -362,7 +354,7 @@ export function OnboardingFlow() {
         ownerUid: uid,
         memberUids,
         userUid: uid,
-        name: clampStr(ownerName || userProfile?.name || 'Pemilik', 120),
+        name: clampStr(resolvedOwnerName, 120),
         email: clampStr(firebaseUser.email || '', 200),
         phone: clampStr(bizPhone, 40),
         position: 'Pemilik Bisnis',
@@ -375,13 +367,19 @@ export function OnboardingFlow() {
 
       batch.update(doc(db, 'users', uid), {
         activeBusinessId: bizId,
+        ...(directToDashboard ? { onboardingCompleted: true } : {}),
         updatedAt: ts,
       });
 
       await batch.commit();
       setCreatedBizId(bizId);
-      setStep('complete');
-      showToast('Workspace bisnis berhasil dibuat!', 'success');
+      if (directToDashboard) {
+        await selectBusiness(bizId);
+        showToast('Workspace bisnis siap! Membuka dasbor...', 'success');
+      } else {
+        setStep('complete');
+        showToast('Workspace bisnis berhasil dibuat!', 'success');
+      }
     } catch (err) {
       showToast(formatAppError(err, 'Gagal menyimpan konfigurasi workspace bisnis.'), 'error');
     } finally {
@@ -416,7 +414,7 @@ export function OnboardingFlow() {
   };
 
   const stepOrder: OnboardingStep[] = ['welcome', 'auth', 'business', 'outlet', 'preferences', 'complete'];
-  const currentIdx = stepOrder.indexOf(step === 'verify_email' ? 'auth' : step);
+  const currentIdx = stepOrder.indexOf(step);
 
   return (
     <div className="min-h-screen bg-[#F4F6FA] ez-dot-grid flex flex-col justify-between">
@@ -532,13 +530,11 @@ export function OnboardingFlow() {
                     <div className="flex flex-wrap items-center gap-3">
                       <button
                         type="button"
-                        onClick={() => {
-                          setAuthTab('register');
-                          setStep('auth');
-                        }}
-                        className="inline-flex items-center gap-2 px-5 py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-lg hover:bg-blue-700 transition-colors whitespace-nowrap shrink-0 shadow-xs"
+                        disabled={busy}
+                        onClick={handleGoogleLogin}
+                        className="inline-flex items-center gap-2 px-5 py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors whitespace-nowrap shrink-0 shadow-xs"
                       >
-                        Mulai Sekarang
+                        Masuk Cepat dengan Google
                         <ArrowRight className="w-4 h-4" />
                       </button>
                       <button
@@ -549,17 +545,22 @@ export function OnboardingFlow() {
                         }}
                         className="inline-flex items-center gap-2 px-5 py-2.5 bg-white border border-slate-300 text-slate-800 text-sm font-semibold rounded-lg hover:bg-slate-50 transition-colors whitespace-nowrap shrink-0"
                       >
-                        Masuk
+                        Masuk Email
                       </button>
                       <button
                         type="button"
-                        disabled={busy}
-                        onClick={handleGoogleLogin}
-                        className="inline-flex items-center gap-2 px-4 py-2.5 bg-[#0B1324] text-white text-sm font-semibold rounded-lg hover:bg-slate-800 disabled:opacity-50 transition-colors whitespace-nowrap shrink-0"
+                        onClick={() => {
+                          setAuthTab('register');
+                          setStep('auth');
+                        }}
+                        className="inline-flex items-center gap-2 px-4 py-2.5 bg-[#0B1324] text-white text-sm font-semibold rounded-lg hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0"
                       >
-                        Masuk dengan Google
+                        Daftar Baru
                       </button>
                     </div>
+                    <p className="text-xs text-slate-500">
+                      Tanpa verifikasi email atau langkah rumit — langsung masuk dan mulai kelola bisnis Anda.
+                    </p>
                   </div>
                 </div>
 
@@ -691,9 +692,9 @@ export function OnboardingFlow() {
                 type="button"
                 disabled={busy}
                 onClick={handleGoogleLogin}
-                className="w-full py-2.5 px-4 bg-white border border-slate-300 text-slate-800 text-sm font-semibold rounded-lg hover:bg-slate-50 transition-colors flex items-center justify-center gap-2 mb-5"
+                className="w-full py-2.5 px-4 bg-[#0B1324] text-white text-sm font-semibold rounded-lg hover:bg-slate-800 disabled:opacity-50 transition-colors flex items-center justify-center gap-2 mb-5"
               >
-                <span>Lanjutkan dengan Google (Instan & Terverifikasi)</span>
+                <span>Lanjutkan dengan Google (1 Klik, Tanpa Konfirmasi Email)</span>
               </button>
 
               <div className="relative flex py-2 items-center mb-5">
@@ -709,24 +710,29 @@ export function OnboardingFlow() {
               )}
 
               {showProviderGuide && (
-                <div className="mb-4 p-3.5 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-900 space-y-1.5">
-                  <p className="font-semibold">Cara Mengaktifkan Email/Password di Firebase Console:</p>
-                  <p>1. Buka Firebase Console proyek Anda → Authentication → Sign-in method.</p>
-                  <p>2. Klik Add new provider → pilih Email/Password → Aktifkan & Simpan.</p>
-                  <p>3. Atau klik tombol "Lanjutkan dengan Google" di atas untuk langsung masuk tanpa konfigurasi tambahan.</p>
+                <div className="mb-4 p-3.5 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-900 space-y-2">
+                  <p className="font-semibold">Login Email/Password belum aktif di proyek ini.</p>
+                  <p>Anda bisa langsung masuk dalam 1 klik dengan Google tanpa perlu mengatur Firebase Console:</p>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={handleGoogleLogin}
+                    className="px-3.5 py-2 bg-[#0B1324] text-white font-semibold rounded-lg hover:bg-slate-800 disabled:opacity-50"
+                  >
+                    Masuk Instan dengan Google
+                  </button>
                 </div>
               )}
 
               <form onSubmit={handleAuthSubmit} className="space-y-4">
                 {authTab === 'register' && (
                   <div>
-                    <label className="block text-xs font-medium text-slate-700 mb-1">Nama Lengkap</label>
+                    <label className="block text-xs font-medium text-slate-700 mb-1">Nama Lengkap (Opsional)</label>
                     <input
                       type="text"
                       value={fullName}
                       onChange={(e) => setFullName(e.target.value)}
                       placeholder="Contoh: Budi Santoso"
-                      required
                       className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                     />
                   </div>
@@ -756,7 +762,7 @@ export function OnboardingFlow() {
                         type={showPassword ? 'text' : 'password'}
                         value={password}
                         onChange={(e) => setPassword(e.target.value)}
-                        placeholder="Minimal 8 karakter"
+                        placeholder={authTab === 'register' ? 'Minimal 6 karakter' : 'Masukkan kata sandi'}
                         required
                         className="w-full pl-9 pr-9 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                       />
@@ -769,49 +775,25 @@ export function OnboardingFlow() {
                       </button>
                     </div>
                     {authTab === 'register' && (
-                      <div className="mt-2 grid grid-cols-2 gap-1 text-[11px]">
-                        <span className={passwordChecks.length ? 'text-emerald-600' : 'text-slate-400'}>
-                          • Min. 8 karakter
-                        </span>
-                        <span className={passwordChecks.upper ? 'text-emerald-600' : 'text-slate-400'}>
-                          • Huruf besar (A-Z)
-                        </span>
-                        <span className={passwordChecks.lower ? 'text-emerald-600' : 'text-slate-400'}>
-                          • Huruf kecil (a-z)
-                        </span>
-                        <span className={passwordChecks.number ? 'text-emerald-600' : 'text-slate-400'}>
-                          • Angka (0-9)
-                        </span>
-                      </div>
+                      <p className={`mt-1.5 text-[11px] ${passwordValid ? 'text-emerald-600 font-medium' : 'text-slate-400'}`}>
+                        {passwordValid ? 'Kata sandi siap digunakan' : 'Minimal 6 karakter, tanpa perlu verifikasi email.'}
+                      </p>
                     )}
                   </div>
                 )}
 
                 {authTab === 'register' && (
-                  <>
-                    <div>
-                      <label className="block text-xs font-medium text-slate-700 mb-1">Konfirmasi Kata Sandi</label>
-                      <input
-                        type="password"
-                        value={confirmPassword}
-                        onChange={(e) => setConfirmPassword(e.target.value)}
-                        placeholder="Ulangi kata sandi"
-                        required
-                        className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      />
-                    </div>
-                    <label className="flex items-start gap-2.5 text-xs text-slate-600 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={acceptedTerms}
-                        onChange={(e) => setAcceptedTerms(e.target.checked)}
-                        className="mt-0.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-                      />
-                      <span>
-                        Saya menyetujui Syarat & Ketentuan serta Kebijakan Privasi penggunaan platform EzFlow.
-                      </span>
-                    </label>
-                  </>
+                  <label className="flex items-start gap-2.5 text-xs text-slate-600 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={acceptedTerms}
+                      onChange={(e) => setAcceptedTerms(e.target.checked)}
+                      className="mt-0.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                    />
+                    <span>
+                      Saya menyetujui Syarat & Ketentuan serta Kebijakan Privasi penggunaan platform EzFlow.
+                    </span>
+                  </label>
                 )}
 
                 {authTab === 'login' && (
@@ -834,7 +816,7 @@ export function OnboardingFlow() {
                   {busy
                     ? 'Memproses...'
                     : authTab === 'register'
-                      ? 'Buat Akun & Lanjutkan'
+                      ? 'Daftar & Langsung Masuk'
                       : authTab === 'login'
                         ? 'Masuk ke Akun'
                         : 'Kirim Tautan Reset'}
@@ -853,66 +835,6 @@ export function OnboardingFlow() {
             </div>
           )}
 
-          {/* EMAIL VERIFICATION GATE */}
-          {step === 'verify_email' && (
-            <div className="bg-white border border-slate-200 rounded-xl p-8 shadow-sm max-w-md mx-auto text-center space-y-4">
-              <div className="w-12 h-12 rounded-full bg-blue-50 text-blue-600 flex items-center justify-center mx-auto">
-                <Mail className="w-6 h-6" />
-              </div>
-              <h2 className="text-xl font-bold text-slate-900">Verifikasi Email Anda</h2>
-              <p className="text-sm text-slate-600">
-                Kami telah mengirim tautan verifikasi ke <span className="font-semibold">{firebaseUser?.email}</span>.
-                Silakan klik tautan di email tersebut lalu tekan tombol muat ulang di bawah.
-              </p>
-              <div className="flex flex-col gap-2.5 pt-2">
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={async () => {
-                    setBusy(true);
-                    try {
-                      const ok = await reloadUserStatus();
-                      if (ok) showToast('Email berhasil diverifikasi!', 'success');
-                      else showToast('Email belum terverifikasi. Cek folder spam/inbox Anda.', 'info');
-                    } catch (err) {
-                      showToast(formatAppError(err, 'Gagal memeriksa status verifikasi email.'), 'error');
-                    } finally {
-                      setBusy(false);
-                    }
-                  }}
-                  className="w-full py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-lg hover:bg-blue-700 disabled:opacity-50"
-                >
-                  Saya Sudah Verifikasi · Lanjutkan
-                </button>
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={async () => {
-                    setBusy(true);
-                    try {
-                      await resendVerificationEmail();
-                      showToast('Email verifikasi dikirim ulang.', 'success');
-                    } catch (err) {
-                      showToast(formatAppError(err, 'Gagal mengirim ulang email verifikasi.'), 'error');
-                    } finally {
-                      setBusy(false);
-                    }
-                  }}
-                  className="w-full py-2 border border-slate-300 text-slate-700 text-sm font-medium rounded-lg hover:bg-slate-50 disabled:opacity-50"
-                >
-                  Kirim Ulang Email Verifikasi
-                </button>
-                <button
-                  type="button"
-                  onClick={handleGoogleLogin}
-                  className="w-full py-2 text-xs text-blue-600 hover:underline"
-                >
-                  Atau masuk instan dengan Google
-                </button>
-              </div>
-            </div>
-          )}
-
           {/* STEP 3: BUSINESS PROFILE SETUP */}
           {step === 'business' && (
             <div className="bg-white border border-slate-200 rounded-xl p-6 sm:p-8 shadow-sm space-y-6">
@@ -920,18 +842,18 @@ export function OnboardingFlow() {
                 <div>
                   <div className="flex items-center gap-2 text-blue-600 text-xs font-semibold mb-1">
                     <Building2 className="w-4 h-4" />
-                    <span>Langkah 3 dari 6</span>
+                    <span>Setup Cepat Workspace</span>
                   </div>
                   <h2 className="text-xl font-bold text-slate-900">Profil Bisnis Anda</h2>
-                  <p className="text-sm text-slate-500">Isi detail bisnis F&B atau muat demo lengkap EzFlow Café.</p>
+                  <p className="text-sm text-slate-500">Isi nama bisnis lalu langsung masuk dasbor, atau coba Demo EzFlow Café dalam 1 klik.</p>
                 </div>
                 <button
                   type="button"
                   disabled={busy}
                   onClick={handleLoadDemoCafe}
-                  className="px-4 py-2.5 bg-slate-900 text-white text-xs font-semibold rounded-lg hover:bg-slate-800 disabled:opacity-50 whitespace-nowrap shrink-0"
+                  className="px-4 py-2.5 bg-[#0B1324] text-white text-xs font-semibold rounded-lg hover:bg-slate-800 disabled:opacity-50 whitespace-nowrap shrink-0"
                 >
-                  {busy ? 'Menyiapkan Demo...' : 'Muat Demo: EzFlow Café'}
+                  {busy ? 'Menyiapkan Demo...' : 'Masuk Demo: EzFlow Café (1 Klik)'}
                 </button>
               </div>
 
@@ -1073,21 +995,29 @@ export function OnboardingFlow() {
                 </div>
               </div>
 
-              <div className="flex justify-end pt-2">
+              <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
                 <button
                   type="button"
                   onClick={() => {
-                    if (!bizName.trim() || !ownerName.trim()) {
-                      showToast('Nama bisnis dan nama pemilik wajib diisi.', 'error');
+                    if (!bizName.trim()) {
+                      showToast('Nama bisnis wajib diisi.', 'error');
                       return;
                     }
                     if (!outletAddress && bizAddress) setOutletAddress(bizAddress);
                     if (!outletContact && bizPhone) setOutletContact(bizPhone);
                     setStep('outlet');
                   }}
-                  className="inline-flex items-center gap-2 px-5 py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-lg hover:bg-blue-700"
+                  className="inline-flex items-center gap-2 px-4 py-2.5 bg-white border border-slate-300 text-slate-700 text-sm font-semibold rounded-lg hover:bg-slate-50"
                 >
-                  Lanjut ke Setup Outlet
+                  Atur Detail Outlet & Pajak (Opsional)
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => handleCompleteOnboarding(true)}
+                  className="inline-flex items-center gap-2 px-5 py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-lg hover:bg-blue-700 disabled:opacity-50"
+                >
+                  {busy ? 'Menyiapkan Dasbor...' : 'Buat Bisnis & Masuk Dasbor'}
                   <ArrowRight className="w-4 h-4" />
                 </button>
               </div>
@@ -1298,7 +1228,7 @@ export function OnboardingFlow() {
                 <button
                   type="button"
                   disabled={busy}
-                  onClick={handleCompleteOnboarding}
+                  onClick={() => handleCompleteOnboarding(false)}
                   className="inline-flex items-center gap-2 px-5 py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-lg hover:bg-blue-700 disabled:opacity-50"
                 >
                   {busy ? 'Menyimpan Workspace...' : 'Selesaikan Setup'}
@@ -1408,11 +1338,11 @@ function mapFirebaseAuthError(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err);
   if (raw.includes('email-already-in-use')) return 'Alamat email sudah terdaftar. Silakan masuk atau reset kata sandi.';
   if (raw.includes('invalid-email')) return 'Format alamat email tidak valid.';
-  if (raw.includes('weak-password')) return 'Kata sandi terlalu lemah. Gunakan minimal 8 karakter kombinasi huruf & angka.';
+  if (raw.includes('weak-password')) return 'Kata sandi terlalu lemah. Gunakan minimal 6 karakter.';
   if (raw.includes('wrong-password') || raw.includes('invalid-credential')) return 'Email atau kata sandi salah.';
   if (raw.includes('user-not-found')) return 'Akun dengan email tersebut belum terdaftar.';
   if (raw.includes('operation-not-allowed')) {
-    return 'Login Email/Password belum diaktifkan di Firebase Console. Aktifkan di Firebase Authentication atau gunakan tombol Google di atas.';
+    return 'Login Email/Password belum diaktifkan di Firebase Console. Klik tombol Google di atas untuk langsung masuk.';
   }
   if (raw.includes('too-many-requests')) return 'Terlalu banyak percobaan. Tunggu beberapa saat lalu coba lagi.';
   return raw;

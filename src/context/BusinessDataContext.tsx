@@ -198,7 +198,7 @@ export function BusinessDataProvider({ children }: { children: React.ReactNode }
   const memberUids = activeBusiness?.memberUids || (ownerUid ? [ownerUid] : []);
 
   useEffect(() => {
-    if (!firebaseUser || !firebaseUser.emailVerified || !bizId) {
+    if (!firebaseUser || !bizId) {
       setOutlets([]);
       setEmployees([]);
       setCategories([]);

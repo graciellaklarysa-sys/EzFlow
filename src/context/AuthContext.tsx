@@ -2,7 +2,6 @@ import React, { createContext, useCallback, useContext, useEffect, useState } fr
 import {
   createUserWithEmailAndPassword,
   onAuthStateChanged,
-  sendEmailVerification,
   sendPasswordResetEmail,
   signInWithEmailAndPassword,
   signInWithPopup,
@@ -46,11 +45,9 @@ interface AuthContextValue {
   authDataError: string | null;
   effectiveRole: UserRole;
   signInWithGoogle: () => Promise<void>;
-  registerWithEmail: (name: string, email: string, password: string) => Promise<{ needsVerification: boolean }>;
+  registerWithEmail: (name: string, email: string, password: string) => Promise<void>;
   loginWithEmail: (email: string, password: string) => Promise<void>;
   sendResetPassword: (email: string) => Promise<void>;
-  resendVerificationEmail: () => Promise<void>;
-  reloadUserStatus: () => Promise<boolean>;
   logout: () => Promise<void>;
   selectBusiness: (businessId: string) => Promise<void>;
   getIdToken: () => Promise<string>;
@@ -97,17 +94,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return;
       }
 
-      if (!user.emailVerified) {
-        setUserProfile(null);
-        setLoadingAuth(false);
-        return;
-      }
-
       try {
         const userRef = doc(db, 'users', user.uid);
         const snap = await getDoc(userRef);
         const email = (user.email || '').toLowerCase();
-        const isSuper = SUPER_ADMIN_EMAILS.has(email);
+        const isSuper = Boolean(user.emailVerified) && SUPER_ADMIN_EMAILS.has(email);
 
         if (!snap.exists()) {
           const initialProfile: UserProfile = {
@@ -143,7 +134,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   // Subscribe to user profile updates
   useEffect(() => {
-    if (!firebaseUser || !firebaseUser.emailVerified) return;
+    if (!firebaseUser) return;
     const unsub = onSnapshot(
       doc(db, 'users', firebaseUser.uid),
       (snap) => {
@@ -163,14 +154,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   // Subscribe to authorized businesses
   useEffect(() => {
-    if (!firebaseUser || !firebaseUser.emailVerified) {
+    if (!firebaseUser) {
       setBusinesses([]);
       return;
     }
 
     setLoadingBusinesses(true);
     const email = (firebaseUser.email || '').toLowerCase();
-    const isSuper = SUPER_ADMIN_EMAILS.has(email);
+    const isSuper = Boolean(firebaseUser.emailVerified) && SUPER_ADMIN_EMAILS.has(email);
 
     const bizQuery = isSuper
       ? query(collection(db, 'businesses'))
@@ -204,7 +195,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const effectiveRole: UserRole = (() => {
     const email = (firebaseUser?.email || '').toLowerCase();
-    if (SUPER_ADMIN_EMAILS.has(email) || userProfile?.role === 'SUPER_ADMIN') {
+    if ((Boolean(firebaseUser?.emailVerified) && SUPER_ADMIN_EMAILS.has(email)) || userProfile?.role === 'SUPER_ADMIN') {
       return 'SUPER_ADMIN';
     }
     if (activeBusiness && firebaseUser) {
@@ -226,8 +217,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const registerWithEmail = useCallback(async (name: string, email: string, password: string) => {
     const cred = await createUserWithEmailAndPassword(auth, email.trim(), password);
     await updateProfile(cred.user, { displayName: clampStr(name, 120) });
-    await sendEmailVerification(cred.user);
-    return { needsVerification: !cred.user.emailVerified };
   }, []);
 
   const loginWithEmail = useCallback(async (email: string, password: string) => {
@@ -238,40 +227,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await sendPasswordResetEmail(auth, email.trim());
   }, []);
 
-  const resendVerificationEmail = useCallback(async () => {
-    if (!auth.currentUser) throw new Error('Tidak ada pengguna yang sedang masuk.');
-    await sendEmailVerification(auth.currentUser);
-  }, []);
-
-  const reloadUserStatus = useCallback(async () => {
-    if (!auth.currentUser) return false;
-    await auth.currentUser.reload();
-    const refreshed = auth.currentUser;
-    setFirebaseUser(refreshed ? ({ ...refreshed } as User) : null);
-    if (refreshed?.emailVerified) {
-      const userRef = doc(db, 'users', refreshed.uid);
-      const snap = await getDoc(userRef);
-      const email = (refreshed.email || '').toLowerCase();
-      if (!snap.exists()) {
-        const profile: UserProfile = {
-          uid: refreshed.uid,
-          name: clampStr(refreshed.displayName || email.split('@')[0] || 'Pengguna EzFlow', 120),
-          email: clampStr(email, 200),
-          role: SUPER_ADMIN_EMAILS.has(email) ? 'SUPER_ADMIN' : 'OWNER',
-          onboardingCompleted: false,
-        };
-        await setDoc(userRef, {
-          ...profile,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-        setUserProfile(profile);
-      }
-      return true;
-    }
-    return false;
-  }, []);
-
   const logout = useCallback(async () => {
     await signOut(auth);
   }, []);
@@ -280,7 +235,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     async (businessId: string) => {
       setActiveBusinessId(businessId);
       setActiveOutletId('ALL');
-      if (firebaseUser?.emailVerified) {
+      if (firebaseUser) {
         try {
           await updateDoc(doc(db, 'users', firebaseUser.uid), {
             activeBusinessId: businessId,
@@ -317,8 +272,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         registerWithEmail,
         loginWithEmail,
         sendResetPassword,
-        resendVerificationEmail,
-        reloadUserStatus,
         logout,
         selectBusiness,
         getIdToken,
