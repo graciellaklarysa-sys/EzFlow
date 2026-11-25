@@ -1,0 +1,8 @@
+{
+  "name": "EzFlow",
+  "description": "EzFlow — Platform manajemen bisnis F&B berbasis AI dan analitik CCTV untuk UMKM Indonesia.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
